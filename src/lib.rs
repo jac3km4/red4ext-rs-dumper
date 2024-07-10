@@ -33,7 +33,7 @@ unsafe extern "C" fn on_game_running(_app: &GameApp) {
 }
 
 fn dump() -> anyhow::Result<()> {
-    let mut output = BufWriter::new(File::create("bindings.rs")?);
+    let mut output = BufWriter::new(File::create("lib.rs")?);
     let rtti = RttiSystem::get();
     Dumper::new(&rtti)?.write(&mut output)
 }

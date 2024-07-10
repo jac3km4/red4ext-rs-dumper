@@ -5,7 +5,7 @@ use anyhow::{anyhow, bail};
 use heck::{ToPascalCase, ToSnakeCase};
 use red4rs::log;
 use red4rs::systems::RttiSystem;
-use red4rs::types::{Bitfield, CName, Class, Enum, Property, TaggedType, Type, ValuePtr};
+use red4rs::types::{Bitfield, CName, Class, Enum, Kind, Property, TaggedType, Type, ValuePtr};
 
 pub struct Dumper<'a> {
     rtti: &'a RttiSystem,
@@ -137,9 +137,32 @@ impl<'a> Dumper<'a> {
         let alignment_override = self.alignment_overrides.get(&class.name()).copied();
         let alignment = alignment_override.unwrap_or(class.alignment());
 
-        if self.derive_whitelist.contains(&class.name()) {
-            writeln!(out, "#[derive(Debug, Clone, PartialEq, PartialOrd)]")?;
+        const WHITELIST_DERIVES: &[&str] = &["Debug", "PartialEq", "PartialOrd"];
+        const SMALL_TYPE_DERIVES: &[&str] = &["Clone", "Copy"];
+
+        let is_copy_eligible = class.size() <= 16
+            && class
+                .properties()
+                .iter()
+                .all(|p| matches!(p.type_().kind(), Kind::Name | Kind::Fundamental));
+
+        let mut derives = self
+            .derive_whitelist
+            .contains(&class.name())
+            .then(|| WHITELIST_DERIVES.iter())
+            .into_iter()
+            .chain(is_copy_eligible.then(|| SMALL_TYPE_DERIVES.iter()))
+            .flatten()
+            .peekable();
+
+        if derives.peek().is_some() {
+            write!(out, "#[derive(")?;
+            for derive in derives {
+                write!(out, "{}, ", derive)?;
+            }
+            writeln!(out, ")]")?;
         }
+
         if !class.is_class() {
             writeln!(out, "#[repr(C, align({}))]", alignment)?;
         } else if let Some(alignment) = alignment_override {
@@ -266,6 +289,7 @@ impl<'a> Dumper<'a> {
 
     fn write_enum<W: io::Write>(&self, out: &mut W, enum_: &Enum) -> anyhow::Result<()> {
         if enum_.variant_values().is_empty() {
+            writeln!(out, "#[derive(Debug, Clone, Copy)]")?;
             writeln!(
                 out,
                 "pub struct {}(pub [u8; {:#X}]);",
@@ -287,6 +311,10 @@ impl<'a> Dumper<'a> {
             8 => "i64",
             other => bail!("unsupported enum size: {other}"),
         };
+        writeln!(
+            out,
+            "#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]"
+        )?;
         writeln!(out, "#[repr({typ})]")?;
         writeln!(out, "pub enum {} {{", self.map_name(enum_.name())?)?;
         let mut variants = enum_
@@ -325,6 +353,7 @@ impl<'a> Dumper<'a> {
     }
 
     fn write_bitfield<W: io::Write>(&self, out: &mut W, bitfield: &Bitfield) -> anyhow::Result<()> {
+        writeln!(out, "#[derive(Debug, Clone, Copy)]")?;
         writeln!(out, "#[repr(transparent)]")?;
         writeln!(
             out,
@@ -572,7 +601,7 @@ mod constants {
     // these script aliases cause conflicts with existing types
     pub(super) const SCRIPT_ALIAS_BLACKLIST: &[&str] = &["FTResult"];
 
-    // these classes that should derive Clone, PartialEq, PartialOrd,
+    // these classes that should derive Debug, PartialEq and PartialOrd,
     // we need to be selective because deriving too many traits causes
     // a massive increase in compile times
     pub(super) const DERIVE_WHITELIST: &[&str] = &[
@@ -593,6 +622,7 @@ mod constants {
         "Box",
         "Sphere",
         "Cylinder",
+        "Point",
     ];
 
     // these types have alignment issues in the RTTI
