@@ -133,6 +133,7 @@ impl<'a> Dumper<'a> {
         let mut padding_fields = 0;
         let mut current_size = 0;
         let mut names_seen: HashMap<String, usize> = HashMap::new();
+        let mapped_name = self.map_name(class.name())?;
 
         let alignment_override = self.alignment_overrides.get(&class.name()).copied();
         let alignment = alignment_override.unwrap_or(class.alignment());
@@ -170,13 +171,31 @@ impl<'a> Dumper<'a> {
         } else {
             writeln!(out, "#[repr(C)]")?;
         };
-        writeln!(out, "pub struct {} {{", self.map_name(class.name())?)?;
+        writeln!(out, "pub struct {mapped_name} {{")?;
 
         let mut bases = iter::once(class)
             .chain(class.base_iter())
             .take_while(|c| c.flags().is_native() == class.flags().is_native())
             .collect::<Vec<_>>();
         bases.reverse();
+
+        let (bases, known_base) = match &bases[..] {
+            [_, base, rem @ ..] if base.name() == CName::new("IScriptable") => {
+                writeln!(out, "    pub base: IScriptable,")?;
+                current_size = base.size();
+                (rem, Some(KnownBase::IScriptable))
+            }
+            [base, rem @ ..] if base.name() == CName::new("ISerializable") => {
+                writeln!(out, "    pub base: ISerializable,")?;
+                current_size = base.size();
+                (rem, Some(KnownBase::ISerializable))
+            }
+            _ => (&bases[..], None),
+        };
+
+        if known_base.is_some() {
+            names_seen.insert("base".into(), 0);
+        }
 
         for base in bases {
             let props = self
@@ -253,11 +272,7 @@ impl<'a> Dumper<'a> {
         writeln!(out)?;
 
         if class.is_class() {
-            writeln!(
-                out,
-                "unsafe impl ScriptClass for {} {{",
-                self.map_name(class.name())?
-            )?;
+            writeln!(out, "unsafe impl ScriptClass for {mapped_name} {{",)?;
             writeln!(
                 out,
                 "    const CLASS_NAME: &'static str = \"{}\";",
@@ -270,11 +285,7 @@ impl<'a> Dumper<'a> {
             }
             writeln!(out, "}}")?;
         } else {
-            writeln!(
-                out,
-                "unsafe impl NativeRepr for {} {{",
-                self.map_name(class.name())?
-            )?;
+            writeln!(out, "unsafe impl NativeRepr for {mapped_name} {{",)?;
             writeln!(
                 out,
                 "    const NAME: &'static str = \"{}\";",
@@ -283,6 +294,28 @@ impl<'a> Dumper<'a> {
             writeln!(out, "}}")?;
         }
         writeln!(out)?;
+
+        match known_base {
+            Some(KnownBase::ISerializable) => {
+                writeln!(out, "impl AsRef<ISerializable> for {mapped_name} {{")?;
+                writeln!(out, "    #[inline]")?;
+                writeln!(out, "    fn as_ref(&self) -> &ISerializable {{")?;
+                writeln!(out, "        &self.base")?;
+                writeln!(out, "    }}")?;
+                writeln!(out, "}}")?;
+                writeln!(out)?;
+            }
+            Some(KnownBase::IScriptable) => {
+                writeln!(out, "impl AsRef<IScriptable> for {mapped_name} {{")?;
+                writeln!(out, "    #[inline]")?;
+                writeln!(out, "    fn as_ref(&self) -> &IScriptable {{")?;
+                writeln!(out, "        &self.base")?;
+                writeln!(out, "    }}")?;
+                writeln!(out, "}}")?;
+                writeln!(out)?;
+            }
+            None => {}
+        }
 
         Ok(())
     }
@@ -402,7 +435,7 @@ impl<'a> PropCollector<'a> {
         let eligible_props = class
             .cached_properties()
             .iter()
-            .filter(|p| p.is_in_value_holder() != class.flags().is_native());
+            .filter(|p| p.flags().in_value_holder() != class.flags().is_native());
         props.extend(eligible_props);
         props.sort_by_key(|prop| prop.value_offset());
         props.dedup_by_key(|prop| prop.value_offset());
@@ -413,7 +446,7 @@ impl<'a> PropCollector<'a> {
         if let Some(base) = class.base() {
             let parent_props = props
                 .iter()
-                .filter(|p| !p.is_in_value_holder())
+                .filter(|p| !p.flags().in_value_holder())
                 .take_while(|p| p.value_offset() < base.size())
                 .count();
             let parent_props = props.drain(..parent_props);
@@ -550,6 +583,11 @@ impl<'a> fmt::Display for TypeFormatter<'a> {
             _ => unimplemented!(),
         }
     }
+}
+
+enum KnownBase {
+    ISerializable,
+    IScriptable,
 }
 
 mod constants {
