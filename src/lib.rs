@@ -2,9 +2,9 @@ use std::fs::File;
 use std::io::BufWriter;
 
 use dumper::Dumper;
-use red4rs::systems::RttiSystem;
-use red4rs::{
-    export_plugin, log, wcstr, GameApp, Plugin, SdkEnv, SemVer, StateListener, StateType, U16CStr,
+use red4ext_rs::{
+    export_plugin, log, wcstr, GameApp, Plugin, RttiSystem, SdkEnv, SemVer, StateListener,
+    StateType, U16CStr,
 };
 
 mod dumper;
@@ -13,7 +13,7 @@ pub struct DumperPlugin;
 
 impl Plugin for DumperPlugin {
     const AUTHOR: &'static U16CStr = wcstr!("jekky");
-    const NAME: &'static U16CStr = wcstr!("red4rs-dumper");
+    const NAME: &'static U16CStr = wcstr!("red4ext-rs-dumper");
     const VERSION: SemVer = SemVer::new(0, 1, 0);
 
     fn on_init(env: &SdkEnv) {
@@ -33,7 +33,7 @@ unsafe extern "C" fn on_game_running(_app: &GameApp) {
 }
 
 fn dump() -> anyhow::Result<()> {
-    let mut output = BufWriter::new(File::create("lib.rs")?);
+    let mut output = BufWriter::new(File::create("generated.rs")?);
     let rtti = RttiSystem::get();
     Dumper::new(&rtti)?.write(&mut output)
 }

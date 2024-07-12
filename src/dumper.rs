@@ -3,9 +3,8 @@ use std::{fmt, io, iter, mem, ptr};
 
 use anyhow::{anyhow, bail};
 use heck::{ToPascalCase, ToSnakeCase};
-use red4rs::log;
-use red4rs::systems::RttiSystem;
-use red4rs::types::{Bitfield, CName, Class, Enum, Kind, Property, TaggedType, Type, ValuePtr};
+use red4ext_rs::types::{Bitfield, CName, Class, Enum, Kind, Property, TaggedType, Type, ValuePtr};
+use red4ext_rs::{log, RttiSystem};
 
 pub struct Dumper<'a> {
     rtti: &'a RttiSystem,
@@ -86,8 +85,8 @@ impl<'a> Dumper<'a> {
     }
 
     pub fn write<W: io::Write>(&self, out: &mut W) -> anyhow::Result<()> {
-        writeln!(out, "use red4rs::repr::NativeRepr;")?;
-        writeln!(out, "use red4rs::types::*;")?;
+        writeln!(out, "use red4ext_rs::NativeRepr;")?;
+        writeln!(out, "use red4ext_rs::types::*;")?;
         writeln!(out)?;
 
         for name in self.formatted_names.keys() {
