@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 [dependencies]
 anyhow = "1"
 heck = "0.5"
-red4rs = { git = "https://github.com/jac3km4/red4rs", rev = "v0.1.5", features = [
+red4rs = { git = "https://github.com/jac3km4/red4rs", rev = "v0.1.7", features = [
     "log",
 ] }
 

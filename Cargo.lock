@@ -259,8 +259,8 @@ dependencies = [
 
 [[package]]
 name = "red4rs"
-version = "0.1.5"
-source = "git+https://github.com/jac3km4/red4rs?rev=v0.1.5#06b5dc169416f52e87217b6ef7b39354b863a1da"
+version = "0.1.7"
+source = "git+https://github.com/jac3km4/red4rs?rev=v0.1.7#3717953c1f053c6729b2b66605b1661431968553"
 dependencies = [
  "bindgen",
  "cmake",
@@ -361,18 +361,18 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "1.0.61"
+version = "1.0.62"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c546c80d6be4bc6a00c0f01730c08df82eaa7a7a61f11d656526506112cc1709"
+checksum = "f2675633b1499176c2dff06b0856a27976a8f9d436737b4cf4f312d4d91d8bbb"
 dependencies = [
  "thiserror-impl",
 ]
 
 [[package]]
 name = "thiserror-impl"
-version = "1.0.61"
+version = "1.0.62"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46c3384250002a6d5af4d114f2845d37b57521033f30d5c3f46c4d70e1197533"
+checksum = "d20468752b09f49e909e55a5d338caa8bedf615594e9d80bc4c565d30faf798c"
 dependencies = [
  "proc-macro2",
  "quote",
