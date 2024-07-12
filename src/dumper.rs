@@ -197,28 +197,34 @@ impl<'a> Dumper<'a> {
             names_seen.insert("base".into(), 0);
         }
 
-        for base in bases {
-            let props = self
-                .class_props
-                .get(&base.name())
-                .map(Vec::as_slice)
-                .unwrap_or_default();
+        for (i, prop) in bases
+            .iter()
+            .flat_map(|base| {
+                self.class_props
+                    .get(&base.name())
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+            })
+            .enumerate()
+        {
+            let offset = prop.value_offset();
+            let Some(padding) = offset.checked_sub(current_size) else {
+                log::warn!(
+                    "Skipping property {} in class {}",
+                    prop.name().as_str(),
+                    class.name().as_str(),
+                );
+                continue;
+            };
 
-            for (i, prop) in props.iter().enumerate() {
-                let offset = prop.value_offset();
-                let Some(padding) = offset.checked_sub(current_size) else {
-                    log::warn!(
-                        "Skipping property {} in class {}",
-                        prop.name().as_str(),
-                        base.name().as_str()
-                    );
-                    continue;
-                };
-
-                if offset
-                    != (current_size as usize).next_multiple_of(prop.type_().alignment() as _)
-                        as u32
-                {
+            let field_alignment = prop
+                .type_()
+                .as_class()
+                .and_then(|c| self.alignment_overrides.get(&c.name()))
+                .copied()
+                .unwrap_or(prop.type_().alignment());
+            if offset != current_size.next_multiple_of(field_alignment) {
+                if padding > 0 {
                     writeln!(
                         out,
                         "    pub _padding{}: [u8; {:#X}],",
@@ -226,44 +232,48 @@ impl<'a> Dumper<'a> {
                     )?;
 
                     padding_fields += 1;
+                } else {
+                    log::warn!(
+                        "Non-aligned property {} in class {}",
+                        prop.name().as_str(),
+                        class.name().as_str()
+                    );
                 }
-                let sane_name = santize_field(prop.name().as_str(), i);
-                let i = names_seen
-                    .entry(sane_name.clone())
-                    .and_modify(|x| *x += 1)
-                    .or_default();
-
-                write!(out, "    pub {sane_name}")?;
-                if *i > 0 {
-                    write!(out, "{i}")?;
-                }
-                match prop.type_().tagged() {
-                    TaggedType::Enum(e)
-                        if current_size != current_size.next_multiple_of(e.byte_size().into()) =>
-                    {
-                        // there are unaligned enums in the RTTI for some reason
-                        write!(out, ": [u8; {:#X}]", e.byte_size())?;
-                    }
-                    _ => {
-                        let typ = TypeFormatter::new(
-                            prop.type_(),
-                            &self.fundamental_types,
-                            &self.formatted_names,
-                        );
-                        write!(out, ": {typ}")?;
-                    }
-                }
-                writeln!(out, ", // {:#X}", offset)?;
-
-                current_size = offset + prop.type_().size();
             }
+            let sane_name = santize_field(prop.name().as_str(), i);
+            let i = names_seen
+                .entry(sane_name.clone())
+                .and_modify(|x| *x += 1)
+                .or_default();
+
+            write!(out, "    pub {sane_name}")?;
+            if *i > 0 {
+                write!(out, "{i}")?;
+            }
+            match prop.type_().tagged() {
+                TaggedType::Enum(e) if offset != offset.next_multiple_of(e.byte_size().into()) => {
+                    // there are unaligned enums in the RTTI for some reason
+                    write!(out, ": [u8; {:#X}]", e.byte_size())?;
+                }
+                _ => {
+                    let typ = TypeFormatter::new(
+                        prop.type_(),
+                        &self.fundamental_types,
+                        &self.formatted_names,
+                    );
+                    write!(out, ": {typ}")?;
+                }
+            }
+            writeln!(out, ", // {:#X}", offset)?;
+
+            current_size = offset + prop.type_().size();
         }
 
         match class.properties_size().checked_sub(current_size) {
             None => {
                 log::warn!("Properties of {} exceed its size", class.name().as_str());
             }
-            Some(i) if i >= alignment || current_size == 0 => {
+            Some(i) if i >= alignment || (current_size == 0 && i > 0) => {
                 writeln!(out, "    pub _padding{}: [u8; {:#X}],", padding_fields, i)?;
             }
             _ => {}
@@ -433,7 +443,7 @@ impl<'a> PropCollector<'a> {
     fn process(&mut self, class: &'a Class) {
         let mut props = self.classes.remove(&class.name()).unwrap_or_default();
         let eligible_props = class
-            .cached_properties()
+            .properties()
             .iter()
             .filter(|p| p.flags().in_value_holder() != class.flags().is_native());
         props.extend(eligible_props);
@@ -667,8 +677,11 @@ mod constants {
     pub(super) const ALIGNMENT_OVERRIDES: &[(&str, u32)] = &[
         ("Color", 1),
         ("PSODescStencilFuncDesc", 1),
+        ("PSODescRenderTarget", 1),
         ("GpuWrapApiVertexPackingPackingElement", 1),
         ("entRenderToTextureFeatures", 1),
+        ("scneventsCameraOverrideSettings", 1),
+        ("worldProxyCustomGeometryParams", 1),
         ("netPeerID", 2),
         ("NavGenNavigationSetting", 2),
         ("vehicleVehicleSlotsState", 4),
