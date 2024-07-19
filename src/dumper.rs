@@ -643,6 +643,8 @@ mod constants {
         "GameTime",
         "entEntityID",
         "gameItemID",
+        "ScriptGameInstance",
+        "gameScriptableSystem",
     ];
 
     // these script aliases cause conflicts with existing types
