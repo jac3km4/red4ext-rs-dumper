@@ -189,6 +189,11 @@ impl<'a> Dumper<'a> {
                 current_size = base.size();
                 (rem, Some(KnownBase::ISerializable))
             }
+            [base, rem @ ..] if base.name() == CName::new("ScriptableSystem") => {
+                writeln!(out, "    pub base: ScriptableSystem,")?;
+                current_size = base.size();
+                (rem, Some(KnownBase::ScriptableSystem))
+            }
             _ => (&bases[..], None),
         };
 
@@ -319,6 +324,22 @@ impl<'a> Dumper<'a> {
                 writeln!(out, "    #[inline]")?;
                 writeln!(out, "    fn as_ref(&self) -> &IScriptable {{")?;
                 writeln!(out, "        &self.base")?;
+                writeln!(out, "    }}")?;
+                writeln!(out, "}}")?;
+                writeln!(out)?;
+            }
+            Some(KnownBase::ScriptableSystem) => {
+                writeln!(out, "impl AsRef<ScriptableSystem> for {mapped_name} {{")?;
+                writeln!(out, "    #[inline]")?;
+                writeln!(out, "    fn as_ref(&self) -> &ScriptableSystem {{")?;
+                writeln!(out, "        &self.base")?;
+                writeln!(out, "    }}")?;
+                writeln!(out, "}}")?;
+                writeln!(out)?;
+                writeln!(out, "impl AsRef<IScriptable> for {mapped_name} {{")?;
+                writeln!(out, "    #[inline]")?;
+                writeln!(out, "    fn as_ref(&self) -> &IScriptable {{")?;
+                writeln!(out, "        &self.base.as_ref()")?;
                 writeln!(out, "    }}")?;
                 writeln!(out, "}}")?;
                 writeln!(out)?;
@@ -597,6 +618,7 @@ impl<'a> fmt::Display for TypeFormatter<'a> {
 enum KnownBase {
     ISerializable,
     IScriptable,
+    ScriptableSystem,
 }
 
 mod constants {
