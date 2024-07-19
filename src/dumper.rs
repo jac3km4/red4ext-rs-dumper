@@ -432,7 +432,7 @@ impl<'a> Dumper<'a> {
             .ok_or_else(|| anyhow!("could not resolve type {}", name.as_str()))
     }
 
-    pub fn report(&self) -> impl fmt::Display {
+    pub fn report(&self) -> String {
         format!(
             "report:\n{}\n{}\n{}\n{}\n{}",
             format_args!("formatted names    : {}", self.formatted_names.len()),
