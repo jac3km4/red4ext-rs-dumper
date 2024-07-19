@@ -189,7 +189,7 @@ impl<'a> Dumper<'a> {
                 current_size = base.size();
                 (rem, Some(KnownBase::ISerializable))
             }
-            [base, rem @ ..] if base.name() == CName::new("ScriptableSystem") => {
+            [base, rem @ ..] if base.name() == CName::new("gameScriptableSystem") => {
                 writeln!(out, "    pub base: ScriptableSystem,")?;
                 current_size = base.size();
                 (rem, Some(KnownBase::ScriptableSystem))
