@@ -431,6 +431,17 @@ impl<'a> Dumper<'a> {
             .map(AsRef::as_ref)
             .ok_or_else(|| anyhow!("could not resolve type {}", name.as_str()))
     }
+
+    pub fn report(&self) -> impl fmt::Display {
+        format!(
+            "report:\n{}\n{}\n{}\n{}\n{}",
+            format_args!("formatted names    : {}", self.formatted_names.len()),
+            format_args!("class props        : {}", self.class_props.len()),
+            format_args!("alignment overrides: {}", self.alignment_overrides.len()),
+            format_args!("derive whitelist   : {}", self.derive_whitelist.len()),
+            format_args!("native blacklist   : {}", self.native_class_blacklist.len()),
+        )
+    }
 }
 
 #[derive(Debug, Default)]
