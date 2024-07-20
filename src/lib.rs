@@ -35,5 +35,7 @@ unsafe extern "C" fn on_game_running(_app: &GameApp) {
 fn dump() -> anyhow::Result<()> {
     let mut output = BufWriter::new(File::create("generated.rs")?);
     let rtti = RttiSystem::get();
-    Dumper::new(&rtti)?.write(&mut output)
+    let dumper = Dumper::new(&rtti)?;
+    log::info!("{}", dumper.report());
+    dumper.write(&mut output)
 }
