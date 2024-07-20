@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::{fmt, io, iter, mem, ptr};
 
 use anyhow::{anyhow, bail};
@@ -9,7 +9,7 @@ use red4ext_rs::{log, RttiSystem};
 pub struct Dumper<'a> {
     rtti: &'a RttiSystem,
     fundamental_types: HashMap<*const Type, &'static str>,
-    formatted_names: HashMap<CName, String>,
+    formatted_names: BTreeMap<CName, String>,
     class_props: HashMap<CName, Vec<&'a Property>>,
     alignment_overrides: HashMap<CName, u32>,
     derive_whitelist: HashSet<CName>,
@@ -31,7 +31,7 @@ impl<'a> Dumper<'a> {
 
         let native_to_script = rtti.native_to_script_map();
         let mut prop_collector = PropCollector::default();
-        let mut formatted_type_names = HashMap::new();
+        let mut formatted_type_names = BTreeMap::new();
 
         for (_, typ) in rtti.types() {
             if let Some(name) = match typ.tagged() {
@@ -431,6 +431,17 @@ impl<'a> Dumper<'a> {
             .map(AsRef::as_ref)
             .ok_or_else(|| anyhow!("could not resolve type {}", name.as_str()))
     }
+
+    pub fn report(&self) -> String {
+        format!(
+            "report:\n{}\n{}\n{}\n{}\n{}",
+            format_args!("formatted names    : {}", self.formatted_names.len()),
+            format_args!("class props        : {}", self.class_props.len()),
+            format_args!("alignment overrides: {}", self.alignment_overrides.len()),
+            format_args!("derive whitelist   : {}", self.derive_whitelist.len()),
+            format_args!("native blacklist   : {}", self.native_class_blacklist.len()),
+        )
+    }
 }
 
 #[derive(Debug, Default)]
@@ -519,14 +530,14 @@ fn sanitize_enum_variant(name: &str) -> String {
 struct TypeFormatter<'a> {
     typ: &'a Type,
     fundamental_types: &'a HashMap<*const Type, &'static str>,
-    formatted_names: &'a HashMap<CName, String>,
+    formatted_names: &'a BTreeMap<CName, String>,
 }
 
 impl<'a> TypeFormatter<'a> {
     fn new(
         typ: &'a Type,
         fundamentals: &'a HashMap<*const Type, &'static str>,
-        type_names: &'a HashMap<CName, String>,
+        type_names: &'a BTreeMap<CName, String>,
     ) -> Self {
         Self {
             typ,
