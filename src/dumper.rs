@@ -696,6 +696,7 @@ mod constants {
         ("worldProxyCustomGeometryParams", 1),
         ("netPeerID", 1),
         ("NavGenNavigationSetting", 2),
+        ("TrafficGenDynamicTrafficSetting", 2),
         ("vehicleVehicleSlotsState", 4),
     ];
 }
