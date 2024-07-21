@@ -3,7 +3,9 @@ use std::{fmt, io, iter, mem, ptr};
 
 use anyhow::{anyhow, bail};
 use heck::{ToPascalCase, ToSnakeCase};
-use red4ext_rs::types::{Bitfield, CName, Class, Enum, Kind, Property, TaggedType, Type, ValuePtr};
+use red4ext_rs::types::{
+    Bitfield, CName, Class, Enum, Property, TaggedType, Type, TypeKind, ValuePtr,
+};
 use red4ext_rs::{log, RttiSystem};
 
 pub struct Dumper<'a> {
@@ -33,7 +35,7 @@ impl<'a> Dumper<'a> {
         let mut prop_collector = PropCollector::default();
         let mut formatted_type_names = BTreeMap::new();
 
-        for (_, typ) in rtti.types() {
+        for (_, typ) in rtti.type_map() {
             if let Some(name) = match typ.tagged() {
                 TaggedType::Class(class) => {
                     if !native_class_blacklist.contains(&class.name()) {
@@ -48,7 +50,7 @@ impl<'a> Dumper<'a> {
                 let pretty_name = native_to_script
                     .get(&name)
                     .filter(|n| {
-                        rtti.types().get(n).is_none() && !script_alias_blacklist.contains(n)
+                        rtti.type_map().get(n).is_none() && !script_alias_blacklist.contains(n)
                     })
                     .copied()
                     .unwrap_or(name)
@@ -85,8 +87,11 @@ impl<'a> Dumper<'a> {
     }
 
     pub fn write<W: io::Write>(&self, out: &mut W) -> anyhow::Result<()> {
-        writeln!(out, "use red4ext_rs::NativeRepr;")?;
         writeln!(out, "use red4ext_rs::types::*;")?;
+        writeln!(
+            out,
+            "use red4ext_rs::{{class_kind, NativeRepr, ScriptClass}};"
+        )?;
         writeln!(out)?;
 
         for name in self.formatted_names.keys() {
@@ -144,7 +149,7 @@ impl<'a> Dumper<'a> {
             && class
                 .properties()
                 .iter()
-                .all(|p| matches!(p.type_().kind(), Kind::Name | Kind::Fundamental));
+                .all(|p| matches!(p.type_().kind(), TypeKind::Name | TypeKind::Fundamental));
 
         let mut derives = self
             .derive_whitelist
@@ -284,13 +289,13 @@ impl<'a> Dumper<'a> {
             writeln!(out, "unsafe impl ScriptClass for {mapped_name} {{",)?;
             writeln!(
                 out,
-                "    const CLASS_NAME: &'static str = \"{}\";",
+                "    const NAME: &'static str = \"{}\";",
                 class.name().as_str()
             )?;
             if class.flags().is_native() {
-                writeln!(out, "    type Kind = Native;",)?;
+                writeln!(out, "    type Kind = class_kind::Native;",)?;
             } else {
-                writeln!(out, "    type Kind = Scripted;",)?;
+                writeln!(out, "    type Kind = class_kind::Scripted;",)?;
             }
             writeln!(out, "}}")?;
         } else {
@@ -565,7 +570,9 @@ impl<'a> fmt::Display for TypeFormatter<'a> {
             TaggedType::Class(class) => {
                 write!(f, "{}", self.formatted_names.get(&class.name()).unwrap())
             }
-            TaggedType::Array(array) => write!(f, "RedArray<{}>", self.format(array.inner_type())),
+            TaggedType::Array(array) => {
+                write!(f, "RedArray<{}>", self.format(array.element_type()))
+            }
             TaggedType::Enum(enum_) => {
                 write!(f, "{}", self.formatted_names.get(&enum_.name()).unwrap())
             }
@@ -596,7 +603,7 @@ impl<'a> fmt::Display for TypeFormatter<'a> {
             }
             TaggedType::Curve(typ) => write!(f, "Curve<{}>", self.format(typ.element_type())),
             TaggedType::FixedArray(array) => {
-                write!(f, "[{}; {}]", self.format(array.inner_type()), unsafe {
+                write!(f, "[{}; {}]", self.format(array.element_type()), unsafe {
                     array.length(mem::transmute::<*mut (), ValuePtr>(ptr::null_mut()))
                 },)
             }

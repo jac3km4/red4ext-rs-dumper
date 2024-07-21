@@ -3,7 +3,7 @@ use std::io::BufWriter;
 
 use dumper::Dumper;
 use red4ext_rs::{
-    export_plugin, log, wcstr, GameApp, Plugin, RttiSystem, SdkEnv, SemVer, StateListener,
+    export_plugin_symbols, log, wcstr, GameApp, Plugin, RttiSystem, SdkEnv, SemVer, StateListener,
     StateType, U16CStr,
 };
 
@@ -24,7 +24,7 @@ impl Plugin for DumperPlugin {
     }
 }
 
-export_plugin!(DumperPlugin);
+export_plugin_symbols!(DumperPlugin);
 
 unsafe extern "C" fn on_game_running(_app: &GameApp) {
     if let Err(err) = dump() {
