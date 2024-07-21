@@ -694,8 +694,9 @@ mod constants {
         ("entRenderToTextureFeatures", 1),
         ("scneventsCameraOverrideSettings", 1),
         ("worldProxyCustomGeometryParams", 1),
-        ("netPeerID", 2),
+        ("netPeerID", 1),
         ("NavGenNavigationSetting", 2),
+        ("TrafficGenDynamicTrafficSetting", 2),
         ("vehicleVehicleSlotsState", 4),
     ];
 }
