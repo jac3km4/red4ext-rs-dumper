@@ -23,7 +23,7 @@ jobs:
 
   lint:
     name: Run clippy
-    runs-on: windows-latest
+    runs-on: windows-2019
     env:
       RUSTFLAGS: -D warnings
     steps:
