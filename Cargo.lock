@@ -35,9 +35,9 @@ checksum = "34ac096ce696dc2fcabef30516bb13c0a68a11d30131d3df6f04711467681b04"
 
 [[package]]
 name = "bindgen"
-version = "0.71.1"
+version = "0.72.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f58bf3d7db68cfbac37cfc485a8d711e87e064c3d0fe0435b92f7a407f9d6b3"
+checksum = "4f72209734318d0b619a5e0f5129918b848c416e122a3c4ce054e03cb87b726f"
 dependencies = [
  "annotate-snippets",
  "bitflags",
@@ -223,7 +223,7 @@ dependencies = [
 [[package]]
 name = "red4ext-rs"
 version = "0.10.0"
-source = "git+https://github.com/jac3km4/red4ext-rs?rev=v0.10.0#61aeba0b8dfce5c8910ee35a0ad5388ff20e3a5a"
+source = "git+https://github.com/jac3km4/red4ext-rs?rev=411ccf1#411ccf1cb85b3dc913034c2924d25701611f5138"
 dependencies = [
  "bindgen",
  "cmake",
