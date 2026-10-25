@@ -207,7 +207,7 @@ dependencies = [
 [[package]]
 name = "red4ext-rs"
 version = "0.11.0"
-source = "git+https://github.com/Roms1383/red4ext-rs?rev=9bb67699df846f7ce05450747753874a5c227669#9bb67699df846f7ce05450747753874a5c227669"
+source = "git+https://github.com/jac3km4/red4ext-rs?rev=4d2fdd9354c59872f50bdc5374027e37ee19a14c#4d2fdd9354c59872f50bdc5374027e37ee19a14c"
 dependencies = [
  "bindgen",
  "cmake",
