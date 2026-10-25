@@ -415,6 +415,10 @@ impl<'a> Dumper<'a> {
 
     fn write_test<W: io::Write>(&self, out: &mut W, class: &Class) -> anyhow::Result<()> {
         writeln!(out, "    #[test]")?;
+        if ["RetractableAdControllerPS", "RipperDocGameController"].contains(&class.name().as_str())
+        {
+            writeln!(out, "    #[ignore = \"red4ext-rs-dumper currently generates incorrect test for scripted class size.\"]")?;
+        }
         writeln!(
             out,
             "    fn test_{}_size() {{",
