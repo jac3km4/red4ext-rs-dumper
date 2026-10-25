@@ -9,9 +9,7 @@ crate-type = ["cdylib"]
 [dependencies]
 anyhow = "1"
 heck = "0.5"
-red4ext-rs = { git = "https://github.com/jac3km4/red4ext-rs", rev = "4d2fdd9354c59872f50bdc5374027e37ee19a14c", features = [
-    "log",
-] }
+red4ext-rs = { git = "https://github.com/jac3km4/red4ext-rs", tag = "v0.11.0", features = ["log"] }
 
 [lints.rust]
 warnings = "warn"
