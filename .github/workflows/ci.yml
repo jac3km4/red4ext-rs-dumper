@@ -4,34 +4,77 @@ on:
   push:
     branches: ["master"]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 env:
-  CARGO_INCREMENTAL: 0
   CARGO_TERM_COLOR: always
-  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+  RED4EXT_BUILD_TIMINGS: "1"
 
 jobs:
-  format:
-    name: Run format
-    runs-on: ubuntu-latest
+  check-format:
+    name: Check formatting
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rustfmt
-      - run: cargo fmt --all --check
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install nightly-2026-10-15 --profile minimal --component rustfmt --no-self-update
+      - run: cargo +nightly-2026-10-15 fmt --all -- --check
 
-  lint:
-    name: Run clippy
-    runs-on: windows-2019
+  check:
+    name: Lint (Windows)
     env:
-      RUSTFLAGS: -D warnings
+      RUSTUP_TOOLCHAIN: stable
+    runs-on: windows-2025
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install stable --profile minimal --component clippy --no-self-update
+      - name: Record native toolchain versions
+        run: |
+          rustc +stable --version --verbose
+          cmake --version
+          clang --version
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: build
-      - run: cargo clippy
+          prefix-key: v1-workspace
+          key: lint
+          # Keep the workspace build-script outputs: SDK library, CMake tree, and bindings.
+          cache-workspace-crates: "true"
+      - name: Lint
+        run: cargo +stable clippy --locked --workspace --all-targets -- -D warnings
+
+  plugin:
+    name: Build release plugin DLL (Windows)
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install stable --profile minimal --no-self-update
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-workspace
+          key: plugin
+          cache-workspace-crates: "true"
+      - name: Build release plugin DLL
+        run: cargo +stable build --locked -p red4ext-rs-dumper --release --target x86_64-pc-windows-msvc --timings
+      - name: Verify plugin DLL
+        shell: pwsh
+        run: |
+          if (-not (Test-Path target/x86_64-pc-windows-msvc/release/red4ext_rs_dumper.dll)) {
+            throw "Plugin DLL was not produced"
+          }
+      - name: Upload plugin DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: red4ext_rs_dumper
+          path: target/x86_64-pc-windows-msvc/release/red4ext_rs_dumper.dll
+          if-no-files-found: error

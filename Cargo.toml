@@ -12,13 +12,10 @@ heck = "0.5"
 red4ext-rs = { git = "https://github.com/jac3km4/red4ext-rs", tag = "v0.11.0", features = ["log"] }
 
 [lints.rust]
-warnings = "warn"
-future_incompatible = "warn"
-let_underscore = "warn"
-nonstandard_style = "warn"
-rust_2018_compatibility = "warn"
-rust_2018_idioms = "warn"
-rust_2021_compatibility = "warn"
+future_incompatible = { level = "warn", priority = -1 }
+let_underscore = { level = "warn", priority = -1 }
+nonstandard_style = { level = "warn", priority = -1 }
+rust_2018_idioms = { level = "warn", priority = -1 }
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
@@ -39,3 +36,5 @@ match_bool = "warn"
 [profile.release]
 panic = 'abort'
 lto = true
+codegen-units = 1
+strip = true
