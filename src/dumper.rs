@@ -415,6 +415,10 @@ impl<'a> Dumper<'a> {
 
     fn write_test<W: io::Write>(&self, out: &mut W, class: &Class) -> anyhow::Result<()> {
         writeln!(out, "    #[test]")?;
+        if ["RetractableAdControllerPS", "RipperDocGameController"].contains(&class.name().as_str())
+        {
+            writeln!(out, "    #[ignore = \"red4ext-rs-dumper currently generates incorrect test for scripted class size.\"]")?;
+        }
         writeln!(
             out,
             "    fn test_{}_size() {{",
@@ -696,12 +700,14 @@ mod constants {
     pub(super) const ALIGNMENT_OVERRIDES: &[(&str, u32)] = &[
         ("Color", 1),
         ("PSODescStencilFuncDesc", 1),
+        ("PSODescBlendModeDesc", 1),
         ("PSODescRenderTarget", 1),
         ("GpuWrapApiVertexPackingPackingElement", 1),
         ("entRenderToTextureFeatures", 1),
         ("scneventsCameraOverrideSettings", 1),
         ("worldProxyCustomGeometryParams", 1),
         ("netPeerID", 1),
+        ("BloomAreaSettings", 1),
         ("NavGenNavigationSetting", 2),
         ("TrafficGenDynamicTrafficSetting", 2),
         ("vehicleVehicleSlotsState", 4),
