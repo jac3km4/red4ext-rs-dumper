@@ -3,8 +3,8 @@ use std::io::BufWriter;
 
 use dumper::Dumper;
 use red4ext_rs::{
-    export_plugin_symbols, log, wcstr, GameApp, Plugin, RttiSystem, SemVer, StateHandlerResult,
-    StateListener, StateType, U16CStr,
+    export_plugin_symbols, log, wcstr, GameApp, Plugin, RttiSystem, SdkEnv, SemVer,
+    StateHandlerResult, StateListener, StateType, U16CStr,
 };
 
 mod dumper;
@@ -16,7 +16,7 @@ impl Plugin for DumperPlugin {
     const NAME: &'static U16CStr = wcstr!("red4ext-rs-dumper");
     const VERSION: SemVer = SemVer::new(0, 1, 0);
 
-    fn on_load(env: &red4ext_rs::SdkEnv) {
+    fn on_load(env: &SdkEnv) {
         env.add_listener(
             StateType::Running,
             StateListener::default().with_on_enter(on_game_running),
