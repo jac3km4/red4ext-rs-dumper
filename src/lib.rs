@@ -8,7 +8,9 @@ use red4ext_rs::{
 };
 
 mod dumper;
+mod layout;
 
+#[derive(Debug)]
 pub struct DumperPlugin;
 
 impl Plugin for DumperPlugin {
@@ -28,15 +30,15 @@ export_plugin_symbols!(DumperPlugin);
 
 unsafe extern "C" fn on_game_running(_app: &GameApp) -> StateHandlerResult {
     if let Err(err) = dump() {
-        log::info!("Error during dump: {:?}", err);
+        log::error!("Error during dump: {:?}", err);
     }
     StateHandlerResult::Finished
 }
 
 fn dump() -> anyhow::Result<()> {
-    let mut output = BufWriter::new(File::create("generated.rs")?);
     let rtti = RttiSystem::get();
-    let dumper = Dumper::new(&rtti)?;
-    log::info!("{}", dumper.report());
-    dumper.write(&mut output)
+    let dumper = Dumper::new(&rtti);
+    log::info!("{dumper}");
+
+    dumper.write(&mut BufWriter::new(File::create("generated.rs")?))
 }

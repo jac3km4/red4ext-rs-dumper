@@ -1,45 +1,53 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::{fmt, io, iter, mem, ptr};
+use std::{fmt, io, ptr};
 
-use anyhow::{anyhow, bail};
+use anyhow::{anyhow, bail, ensure};
 use heck::{ToPascalCase, ToSnakeCase};
-use red4ext_rs::types::{
-    Bitfield, CName, Class, Enum, Property, TaggedType, Type, TypeKind, ValuePtr,
-};
-use red4ext_rs::{log, RttiSystem};
+use red4ext_rs::types::{Bitfield, CName, Class, Enum, Property, TaggedType, Type, TypeKind};
+use red4ext_rs::RttiSystem;
+use resolver::{fixed_array_len, ClassPlan, KnownBase, LayoutResolver};
+
+use crate::layout::Layout;
+
+mod constants;
+mod resolver;
+
+#[cfg(test)]
+mod tests;
 
 pub struct Dumper<'a> {
     rtti: &'a RttiSystem,
-    fundamental_types: HashMap<*const Type, &'static str>,
-    formatted_names: BTreeMap<CName, String>,
-    class_props: HashMap<CName, Vec<&'a Property>>,
+    known_types: HashMap<*const Type, KnownType>,
+    rust_type_names: BTreeMap<CName, String>,
+    class_properties: HashMap<CName, Vec<&'a Property>>,
     alignment_overrides: HashMap<CName, u32>,
     derive_whitelist: HashSet<CName>,
-    native_class_blacklist: HashSet<CName>,
+    excluded_classes: HashSet<CName>,
 }
 
 impl<'a> Dumper<'a> {
-    pub fn new(rtti: &'a RttiSystem) -> anyhow::Result<Self> {
+    pub fn new(rtti: &'a RttiSystem) -> Self {
         let script_alias_blacklist: HashSet<_> = constants::SCRIPT_ALIAS_BLACKLIST
             .iter()
             .copied()
             .map(CName::new)
             .collect();
-        let native_class_blacklist: HashSet<_> = constants::NATIVE_CLASS_BLACKLIST
+        let excluded_classes: HashSet<_> = constants::EXCLUDED_CLASSES
             .iter()
             .copied()
+            .chain(constants::KNOWN_TYPE_MAPPING.iter().map(|&(name, _)| name))
             .map(CName::new)
             .collect();
 
         let native_to_script = rtti.native_to_script_map();
-        let mut prop_collector = PropCollector::default();
-        let mut formatted_type_names = BTreeMap::new();
+        let mut property_collector = PropertyCollector::default();
+        let mut rust_type_names = BTreeMap::new();
 
         for (_, typ) in rtti.type_map() {
             if let Some(name) = match typ.tagged() {
                 TaggedType::Class(class) => {
-                    if !native_class_blacklist.contains(&class.name()) {
-                        prop_collector.process(class);
+                    if !excluded_classes.contains(&class.name()) {
+                        property_collector.process(class);
                     }
                     Some(class.name())
                 }
@@ -47,7 +55,7 @@ impl<'a> Dumper<'a> {
                 TaggedType::BitField(bf) => Some(bf.name()),
                 _ => None,
             } {
-                let pretty_name = native_to_script
+                let rust_name = native_to_script
                     .get(&name)
                     .filter(|n| {
                         rtti.type_map().get(n).is_none() && !script_alias_blacklist.contains(n)
@@ -56,23 +64,21 @@ impl<'a> Dumper<'a> {
                     .unwrap_or(name)
                     .as_str()
                     .to_pascal_case();
-                formatted_type_names.insert(name, pretty_name);
+                rust_type_names.insert(name, rust_name);
             }
         }
 
-        Ok(Self {
+        Self {
             rtti,
-            fundamental_types: constants::FUNDAMENTAL_TYPE_MAPPING
+            known_types: constants::KNOWN_TYPE_MAPPING
                 .iter()
-                .map(|&(from, to)| {
-                    let ty = rtti
-                        .get_type(CName::new(from))
-                        .ok_or_else(|| anyhow!("could not resolve {from} type"))?;
-                    Ok((ptr::from_ref(ty), to))
+                .filter_map(|&(name, mapped)| {
+                    rtti.get_type(CName::new(name))
+                        .map(|typ| (ptr::from_ref(typ), mapped))
                 })
-                .collect::<anyhow::Result<_>>()?,
-            formatted_names: formatted_type_names,
-            class_props: prop_collector.classes,
+                .collect(),
+            rust_type_names,
+            class_properties: property_collector.classes,
             alignment_overrides: constants::ALIGNMENT_OVERRIDES
                 .iter()
                 .map(|&(name, align)| (CName::new(name), align))
@@ -82,11 +88,13 @@ impl<'a> Dumper<'a> {
                 .copied()
                 .map(CName::new)
                 .collect(),
-            native_class_blacklist,
-        })
+            excluded_classes,
+        }
     }
 
     pub fn write<W: io::Write>(&self, out: &mut W) -> anyhow::Result<()> {
+        let mut layouts = LayoutResolver::new(self);
+        layouts.validate_all()?;
         writeln!(out, "use red4ext_rs::types::*;")?;
         writeln!(
             out,
@@ -94,7 +102,7 @@ impl<'a> Dumper<'a> {
         )?;
         writeln!(out)?;
 
-        for name in self.formatted_names.keys() {
+        for name in self.rust_type_names.keys() {
             let typ = self
                 .rtti
                 .get_type(*name)
@@ -102,10 +110,11 @@ impl<'a> Dumper<'a> {
 
             match typ.tagged() {
                 TaggedType::Class(class) => {
-                    if self.native_class_blacklist.contains(&class.name()) {
+                    if self.excluded_classes.contains(&class.name()) {
                         continue;
                     }
-                    self.write_class(out, class)?;
+                    let plan = layouts.class_plan(class)?;
+                    self.write_class(out, class, plan)?;
                 }
                 TaggedType::Enum(enum_) => {
                     self.write_enum(out, enum_)?;
@@ -121,26 +130,26 @@ impl<'a> Dumper<'a> {
         writeln!(out, "mod tests {{")?;
         writeln!(out, "    use super::*;")?;
         writeln!(out)?;
-        for name in self.class_props.keys() {
-            let class = self
-                .rtti
-                .get_class(*name)
-                .ok_or_else(|| anyhow!("could not resolve class {name}"))?;
-            self.write_test(out, class)?;
+        for name in self.rust_type_names.keys() {
+            if self.excluded_classes.contains(name) {
+                continue;
+            }
+            if let Some(class) = self.rtti.get_class(*name) {
+                self.write_test(out, class, layouts.class_plan(class)?)?;
+            }
         }
         writeln!(out, "}}")?;
 
         Ok(())
     }
 
-    fn write_class<W: io::Write>(&self, out: &mut W, class: &Class) -> anyhow::Result<()> {
-        let mut padding_fields = 0;
-        let mut current_size = 0;
-        let mut names_seen: HashMap<String, usize> = HashMap::new();
-        let mapped_name = self.map_name(class.name())?;
-
-        let alignment_override = self.alignment_overrides.get(&class.name()).copied();
-        let alignment = alignment_override.unwrap_or(class.alignment());
+    fn write_class<W: io::Write>(
+        &self,
+        out: &mut W,
+        class: &Class,
+        plan: &ClassPlan<'_>,
+    ) -> anyhow::Result<()> {
+        let mapped_name = self.rust_type_name(class.name())?;
 
         const WHITELIST_DERIVES: &[&str] = &["Debug", "PartialEq", "PartialOrd"];
         const SMALL_TYPE_DERIVES: &[&str] = &["Clone", "Copy"];
@@ -168,119 +177,28 @@ impl<'a> Dumper<'a> {
             writeln!(out, ")]")?;
         }
 
-        if !class.is_class() {
-            writeln!(out, "#[repr(C, align({}))]", alignment)?;
-        } else if let Some(alignment) = alignment_override {
-            writeln!(out, "#[repr(C, align({}))]", alignment)?;
+        let alignment = plan.layout.alignment;
+        if alignment > 1 {
+            writeln!(out, "#[repr(C, align({alignment}))]")?;
         } else {
             writeln!(out, "#[repr(C)]")?;
-        };
+        }
         writeln!(out, "pub struct {mapped_name} {{")?;
 
-        let mut bases = iter::once(class)
-            .chain(class.base_iter())
-            .take_while(|c| c.flags().is_native() == class.flags().is_native())
-            .collect::<Vec<_>>();
-        bases.reverse();
-
-        let (bases, known_base) = match &bases[..] {
-            [_, base, rem @ ..] if base.name() == CName::new("IScriptable") => {
-                writeln!(out, "    pub base: IScriptable,")?;
-                current_size = base.size();
-                (rem, Some(KnownBase::IScriptable))
+        for field in &plan.fields {
+            if let Some(padding) = &field.padding {
+                padding.write(out)?;
             }
-            [base, rem @ ..] if base.name() == CName::new("ISerializable") => {
-                writeln!(out, "    pub base: ISerializable,")?;
-                current_size = base.size();
-                (rem, Some(KnownBase::ISerializable))
-            }
-            _ => (&bases[..], None),
-        };
-
-        if known_base.is_some() {
-            names_seen.insert("base".into(), 0);
+            writeln!(
+                out,
+                "    pub {}: {}, // {:#X}",
+                field.name,
+                field.rust_type.display(self),
+                field.offset
+            )?;
         }
-
-        for (i, prop) in bases
-            .iter()
-            .flat_map(|base| {
-                self.class_props
-                    .get(&base.name())
-                    .map(Vec::as_slice)
-                    .unwrap_or_default()
-            })
-            .enumerate()
-        {
-            let offset = prop.value_offset();
-            let Some(padding) = offset.checked_sub(current_size) else {
-                log::warn!(
-                    "Skipping property {} in class {}",
-                    prop.name().as_str(),
-                    class.name().as_str(),
-                );
-                continue;
-            };
-
-            let field_alignment = prop
-                .type_()
-                .as_class()
-                .and_then(|c| self.alignment_overrides.get(&c.name()))
-                .copied()
-                .unwrap_or(prop.type_().alignment());
-            if offset != current_size.next_multiple_of(field_alignment) {
-                if padding > 0 {
-                    writeln!(
-                        out,
-                        "    pub _padding{}: [u8; {:#X}],",
-                        padding_fields, padding
-                    )?;
-
-                    padding_fields += 1;
-                } else {
-                    log::warn!(
-                        "Non-aligned property {} in class {}",
-                        prop.name().as_str(),
-                        class.name().as_str()
-                    );
-                }
-            }
-            let sane_name = santize_field(prop.name().as_str(), i);
-            let i = names_seen
-                .entry(sane_name.clone())
-                .and_modify(|x| *x += 1)
-                .or_default();
-
-            write!(out, "    pub {sane_name}")?;
-            if *i > 0 {
-                write!(out, "{i}")?;
-            }
-            match prop.type_().tagged() {
-                TaggedType::Enum(e) if offset != offset.next_multiple_of(e.byte_size().into()) => {
-                    // there are unaligned enums in the RTTI for some reason
-                    write!(out, ": [u8; {:#X}]", e.byte_size())?;
-                }
-                _ => {
-                    let typ = TypeFormatter::new(
-                        prop.type_(),
-                        &self.fundamental_types,
-                        &self.formatted_names,
-                    );
-                    write!(out, ": {typ}")?;
-                }
-            }
-            writeln!(out, ", // {:#X}", offset)?;
-
-            current_size = offset + prop.type_().size();
-        }
-
-        match class.properties_size().checked_sub(current_size) {
-            None => {
-                log::warn!("Properties of {} exceed its size", class.name().as_str());
-            }
-            Some(i) if i >= alignment || (current_size == 0 && i > 0) => {
-                writeln!(out, "    pub _padding{}: [u8; {:#X}],", padding_fields, i)?;
-            }
-            _ => {}
+        if let Some(padding) = &plan.tail_padding {
+            padding.write(out)?;
         }
         writeln!(out, "}}")?;
         writeln!(out)?;
@@ -309,7 +227,7 @@ impl<'a> Dumper<'a> {
         }
         writeln!(out)?;
 
-        match known_base {
+        match plan.known_base {
             Some(KnownBase::ISerializable) => {
                 writeln!(out, "impl AsRef<ISerializable> for {mapped_name} {{")?;
                 writeln!(out, "    #[inline]")?;
@@ -337,10 +255,11 @@ impl<'a> Dumper<'a> {
     fn write_enum<W: io::Write>(&self, out: &mut W, enum_: &Enum) -> anyhow::Result<()> {
         if enum_.variant_values().is_empty() {
             writeln!(out, "#[derive(Debug, Clone, Copy)]")?;
+            writeln!(out, "#[repr(transparent)]")?;
             writeln!(
                 out,
                 "pub struct {}(pub [u8; {:#X}]);",
-                self.map_name(enum_.name())?,
+                self.rust_type_name(enum_.name())?,
                 enum_.byte_size()
             )?;
             return Ok(());
@@ -363,7 +282,7 @@ impl<'a> Dumper<'a> {
             "#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]"
         )?;
         writeln!(out, "#[repr({typ})]")?;
-        writeln!(out, "pub enum {} {{", self.map_name(enum_.name())?)?;
+        writeln!(out, "pub enum {} {{", self.rust_type_name(enum_.name())?)?;
         let mut variants = enum_
             .variant_names()
             .iter()
@@ -386,7 +305,7 @@ impl<'a> Dumper<'a> {
         writeln!(
             out,
             "unsafe impl NativeRepr for {} {{",
-            self.map_name(enum_.name())?
+            self.rust_type_name(enum_.name())?
         )?;
         writeln!(
             out,
@@ -405,7 +324,7 @@ impl<'a> Dumper<'a> {
         writeln!(
             out,
             "pub struct {}(pub [u8; {:#X}]);",
-            self.map_name(bitfield.name())?,
+            self.rust_type_name(bitfield.name())?,
             bitfield.byte_size()
         )?;
         writeln!(out)?;
@@ -413,52 +332,145 @@ impl<'a> Dumper<'a> {
         Ok(())
     }
 
-    fn write_test<W: io::Write>(&self, out: &mut W, class: &Class) -> anyhow::Result<()> {
+    fn write_test<W: io::Write>(
+        &self,
+        out: &mut W,
+        class: &Class,
+        plan: &ClassPlan<'_>,
+    ) -> anyhow::Result<()> {
+        let name = self.rust_type_name(class.name())?;
         writeln!(out, "    #[test]")?;
-        if ["RetractableAdControllerPS", "RipperDocGameController"].contains(&class.name().as_str())
-        {
-            writeln!(out, "    #[ignore = \"red4ext-rs-dumper currently generates incorrect test for scripted class size.\"]")?;
-        }
         writeln!(
             out,
-            "    fn test_{}_size() {{",
+            "    fn test_{}_layout() {{",
             class.name().as_str().to_snake_case()
         )?;
         writeln!(
             out,
-            "        assert_eq!(std::mem::size_of::<{}>().next_multiple_of(16), {});",
-            self.map_name(class.name())?,
-            class.properties_size().next_multiple_of(16)
+            "        assert_eq!(std::mem::size_of::<{name}>(), {});",
+            plan.layout.size
         )?;
+        writeln!(
+            out,
+            "        assert_eq!(std::mem::align_of::<{name}>(), {});",
+            plan.layout.alignment
+        )?;
+        for field in &plan.fields {
+            writeln!(
+                out,
+                "        assert_eq!(std::mem::offset_of!({name}, {}), {:#X});",
+                field.name, field.offset
+            )?;
+        }
         writeln!(out, "    }}")?;
         Ok(())
     }
 
-    fn map_name(&self, name: CName) -> anyhow::Result<&str> {
-        self.formatted_names
+    fn rust_type_name(&self, name: CName) -> anyhow::Result<&str> {
+        self.rust_type_names
             .get(&name)
             .map(AsRef::as_ref)
             .ok_or_else(|| anyhow!("could not resolve type {}", name.as_str()))
     }
 
-    pub fn report(&self) -> String {
-        format!(
-            "report:\n{}\n{}\n{}\n{}\n{}",
-            format_args!("formatted names    : {}", self.formatted_names.len()),
-            format_args!("class props        : {}", self.class_props.len()),
-            format_args!("alignment overrides: {}", self.alignment_overrides.len()),
-            format_args!("derive whitelist   : {}", self.derive_whitelist.len()),
-            format_args!("native blacklist   : {}", self.native_class_blacklist.len()),
-        )
+    // Type spelling is independent of layout resolution: handles and arrays may
+    // legally refer back to the class currently being generated.
+    fn write_type_name(&self, typ: &Type, out: &mut impl fmt::Write) -> anyhow::Result<()> {
+        if let Some(mapped) = self.known_types.get(&ptr::from_ref(typ)) {
+            out.write_str(mapped.rust_name)?;
+            return Ok(());
+        }
+
+        let (prefix, inner, suffix, count) = match typ.tagged() {
+            TaggedType::Name => {
+                out.write_str("CName")?;
+                return Ok(());
+            }
+            TaggedType::Class(class) => {
+                ensure!(
+                    !self.excluded_classes.contains(&class.name()),
+                    "no Rust representation for excluded class {}",
+                    class.name()
+                );
+                out.write_str(self.rust_type_name(class.name())?)?;
+                return Ok(());
+            }
+            TaggedType::Enum(enum_) => {
+                out.write_str(self.rust_type_name(enum_.name())?)?;
+                return Ok(());
+            }
+            TaggedType::BitField(bf) => {
+                out.write_str(self.rust_type_name(bf.name())?)?;
+                return Ok(());
+            }
+            TaggedType::Array(array) => ("RedArray<", array.element_type(), ">", None),
+            TaggedType::StaticArray(array) => (
+                "StaticArray<",
+                array.element_type(),
+                ">",
+                Some((", ", array.size())),
+            ),
+            TaggedType::NativeArray(array) => {
+                ("[", array.element_type(), "]", Some(("; ", array.size())))
+            }
+            TaggedType::FixedArray(array) => (
+                "[",
+                array.element_type(),
+                "]",
+                Some(("; ", fixed_array_len(typ)?)),
+            ),
+            TaggedType::Ref(ref_) => ("Ref<", ref_.pointee(), ">", None),
+            TaggedType::WeakRef(ref_) => ("WeakRef<", ref_.pointee(), ">", None),
+            TaggedType::ResourceRef(ref_) => ("ResourceRef<", ref_.resource_type(), ">", None),
+            TaggedType::RaRef(ref_) => ("RaRef<", ref_.resource_type(), ">", None),
+            TaggedType::Curve(curve) => ("Curve<", curve.element_type(), ">", None),
+            _ => bail!("unsupported RTTI type {} ({:?})", typ.name(), typ.kind()),
+        };
+        out.write_str(prefix)?;
+        self.write_type_name(inner, out)?;
+        if let Some((separator, count)) = count {
+            write!(out, "{separator}{count}")?;
+        }
+        out.write_str(suffix)?;
+        Ok(())
+    }
+}
+
+impl fmt::Debug for Dumper<'_> {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        out.debug_struct("Dumper")
+            .field("rtti", &ptr::from_ref(self.rtti))
+            .field("known_types", &self.known_types.len())
+            .field("rust_type_names", &self.rust_type_names.len())
+            .field("class_properties", &self.class_properties.len())
+            .field("alignment_overrides", &self.alignment_overrides.len())
+            .field("derive_whitelist", &self.derive_whitelist.len())
+            .field("excluded_classes", &self.excluded_classes.len())
+            .finish()
+    }
+}
+
+impl fmt::Display for Dumper<'_> {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(out, "report:")?;
+        writeln!(out, "Rust type names    : {}", self.rust_type_names.len())?;
+        writeln!(out, "class properties   : {}", self.class_properties.len())?;
+        writeln!(
+            out,
+            "alignment overrides: {}",
+            self.alignment_overrides.len()
+        )?;
+        writeln!(out, "derive whitelist   : {}", self.derive_whitelist.len())?;
+        write!(out, "excluded classes   : {}", self.excluded_classes.len())
     }
 }
 
 #[derive(Debug, Default)]
-struct PropCollector<'a> {
+struct PropertyCollector<'a> {
     classes: HashMap<CName, Vec<&'a Property>>,
 }
 
-impl<'a> PropCollector<'a> {
+impl<'a> PropertyCollector<'a> {
     fn process(&mut self, class: &'a Class) {
         let mut props = self.classes.remove(&class.name()).unwrap_or_default();
         let eligible_props = class
@@ -499,7 +511,7 @@ impl<'a> PropCollector<'a> {
     }
 }
 
-fn santize_field(name: &str, i: usize) -> String {
+fn sanitize_field(name: &str, i: usize) -> String {
     let str = name.to_snake_case();
 
     // rename fields that conflict with Rust keywords
@@ -535,181 +547,17 @@ fn sanitize_enum_variant(name: &str) -> String {
     }
 }
 
-#[derive(Debug)]
-struct TypeFormatter<'a> {
-    typ: &'a Type,
-    fundamental_types: &'a HashMap<*const Type, &'static str>,
-    formatted_names: &'a BTreeMap<CName, String>,
+#[derive(Debug, Clone, Copy)]
+struct KnownType {
+    rust_name: &'static str,
+    layout: Layout,
 }
 
-impl<'a> TypeFormatter<'a> {
-    fn new(
-        typ: &'a Type,
-        fundamentals: &'a HashMap<*const Type, &'static str>,
-        type_names: &'a BTreeMap<CName, String>,
-    ) -> Self {
+impl KnownType {
+    const fn new<T>(rust_name: &'static str) -> Self {
         Self {
-            typ,
-            fundamental_types: fundamentals,
-            formatted_names: type_names,
+            rust_name,
+            layout: Layout::of::<T>(),
         }
     }
-
-    fn format(&self, typ: &'a Type) -> Self {
-        Self::new(typ, self.fundamental_types, self.formatted_names)
-    }
-}
-
-impl<'a> fmt::Display for TypeFormatter<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.typ.tagged() {
-            TaggedType::Name => write!(f, "CName"),
-            TaggedType::Fundamental | TaggedType::Simple => {
-                if let Some(name) = self.fundamental_types.get(&ptr::from_ref(self.typ)) {
-                    write!(f, "{}", name)
-                } else {
-                    write!(f, "!")
-                }
-            }
-            TaggedType::Class(class) => {
-                write!(f, "{}", self.formatted_names.get(&class.name()).unwrap())
-            }
-            TaggedType::Array(array) => {
-                write!(f, "RedArray<{}>", self.format(array.element_type()))
-            }
-            TaggedType::Enum(enum_) => {
-                write!(f, "{}", self.formatted_names.get(&enum_.name()).unwrap())
-            }
-            TaggedType::StaticArray(array) => write!(
-                f,
-                "StaticArray<{}, {}>",
-                self.format(array.element_type()),
-                array.size()
-            ),
-            TaggedType::NativeArray(array) => {
-                write!(
-                    f,
-                    "[{}; {}]",
-                    self.format(array.element_type()),
-                    array.size()
-                )
-            }
-            TaggedType::Ref(ref_) => {
-                write!(f, "Ref<{}>", self.format(ref_.pointee()))
-            }
-            TaggedType::WeakRef(wref) => write!(f, "WeakRef<{}>", self.format(wref.pointee())),
-            TaggedType::ResourceRef(ref_) => {
-                write!(f, "ResourceRef<{}>", self.format(ref_.resource_type()))
-            }
-            TaggedType::RaRef(ref_) => write!(f, "RaRef<{}>", self.format(ref_.resource_type())),
-            TaggedType::BitField(bf) => {
-                write!(f, "{}", self.formatted_names.get(&bf.name()).unwrap())
-            }
-            TaggedType::Curve(typ) => write!(f, "Curve<{}>", self.format(typ.element_type())),
-            TaggedType::FixedArray(array) => {
-                write!(f, "[{}; {}]", self.format(array.element_type()), unsafe {
-                    array.length(mem::transmute::<*mut (), ValuePtr>(ptr::null_mut()))
-                },)
-            }
-            _ => unimplemented!(),
-        }
-    }
-}
-
-enum KnownBase {
-    ISerializable,
-    IScriptable,
-}
-
-mod constants {
-    pub(super) const FUNDAMENTAL_TYPE_MAPPING: &[(&str, &str)] = &[
-        ("Bool", "bool"),
-        ("Int8", "i8"),
-        ("Uint8", "u8"),
-        ("Int16", "i16"),
-        ("Uint16", "u16"),
-        ("Int32", "i32"),
-        ("Uint32", "u32"),
-        ("Int64", "i64"),
-        ("Uint64", "u64"),
-        ("Float", "f32"),
-        ("Double", "f64"),
-        ("String", "RedString"),
-        ("LocalizationString", "LocalizationString"),
-        ("CName", "CName"),
-        ("TweakDBID", "TweakDbId"),
-        ("NodeRef", "NodeRef"),
-        ("DataBuffer", "DataBuffer"),
-        ("serializationDeferredDataBuffer", "DeferredDataBuffer"),
-        ("SharedDataBuffer", "SharedDataBuffer"),
-        ("CDateTime", "DateTime"),
-        ("CGUID", "Guid"),
-        ("CRUID", "Cruid"),
-        ("EditorObjectID", "EditorObjectId"),
-        ("MessageResourcePath", "MessageResourcePath"),
-        ("Variant", "Variant"),
-        ("multiChannelCurve:Float", "MultiChannelCurve<f32>"),
-    ];
-
-    pub(super) const NATIVE_CLASS_BLACKLIST: &[&str] = &[
-        // these types are not useable due to not being defined correctly in the RTTI
-        "scnChatterModuleSharedState",
-        "gameuiUIGameState",
-        // these types have hand-written implementations
-        "ISerializable",
-        "IScriptable",
-        "redResourceReferenceScriptToken",
-        "ResourceRef",
-        "ResourceAsyncRef",
-        "EngineTime",
-        "GameTime",
-        "entEntityID",
-        "gameItemID",
-        "ScriptGameInstance",
-        "gameScriptableSystem",
-    ];
-
-    // these script aliases cause conflicts with existing types
-    pub(super) const SCRIPT_ALIAS_BLACKLIST: &[&str] = &["FTResult"];
-
-    // these classes that should derive Debug, PartialEq and PartialOrd,
-    // we need to be selective because deriving too many traits causes
-    // a massive increase in compile times
-    pub(super) const DERIVE_WHITELIST: &[&str] = &[
-        "Vector2",
-        "Vector3",
-        "Vector4",
-        "Quaternion",
-        "EulerAngles",
-        "Matrix",
-        "Transform",
-        "FixedPoint",
-        "WorldPosition",
-        "Color",
-        "HDRColor",
-        "Rect",
-        "RectF",
-        "Plane",
-        "Box",
-        "Sphere",
-        "Cylinder",
-        "Point",
-    ];
-
-    // these types have alignment issues in the RTTI
-    pub(super) const ALIGNMENT_OVERRIDES: &[(&str, u32)] = &[
-        ("Color", 1),
-        ("PSODescStencilFuncDesc", 1),
-        ("PSODescBlendModeDesc", 1),
-        ("PSODescRenderTarget", 1),
-        ("GpuWrapApiVertexPackingPackingElement", 1),
-        ("entRenderToTextureFeatures", 1),
-        ("scneventsCameraOverrideSettings", 1),
-        ("worldProxyCustomGeometryParams", 1),
-        ("netPeerID", 1),
-        ("BloomAreaSettings", 1),
-        ("NavGenNavigationSetting", 2),
-        ("TrafficGenDynamicTrafficSetting", 2),
-        ("vehicleVehicleSlotsState", 4),
-    ];
 }
